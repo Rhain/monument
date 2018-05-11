@@ -14,9 +14,10 @@
                 <md-input name="username" id="username" v-model="form.username" md-counter="64" :disabled="sending"/>
                 <span class="md-error" v-if="!$v.form.username.required">姓名必填</span>
                 <span class="md-error" v-else-if="!$v.form.username.maxLength">姓名不能超过64个字符</span>
-
-                <md-button class="md-primary">Primary</md-button>
               </md-field>
+            </div>
+            <div class="md-layout-item md-small-size-100">
+              <md-button class="md-raised md-primary search-btn" @click="query">查询</md-button>
             </div>
           </div>
 
@@ -29,14 +30,21 @@
                 <span class="md-error" v-else-if="!$v.form.content.maxLength">介绍不能超过2048个字符</span>
               </md-field>
             </div>
-
+          </div>
+          <div class="md-layout md-gutter">
+            <div class="md-layout-item md-small-size-100">
+              <p>
+                <strong>txhash:</strong>
+                {{txhash}}
+              </p>
+            </div>
           </div>
         </md-card-content>
 
         <md-progress-bar md-mode="indeterminate" v-if="sending"/>
 
         <md-card-actions>
-          <md-button type="submit" class="md-primary" :disabled="sending">保存/更改</md-button>
+          <md-button type="submit" class="md-raised md-primary" :disabled="sending">保存/更改</md-button>
         </md-card-actions>
       </md-card>
 
@@ -51,6 +59,7 @@
 </template>
 
 <script>
+  import Nebulas from 'nebulas'
   import NebPay from 'nebpay.js'
   import {validationMixin} from 'vuelidate'
   import {
@@ -73,7 +82,12 @@
       internal: null,
       showDialog: false,
       dialogContent: "",
-      dialogTitle: ""
+      dialogTitle: "",
+      ended: false,
+      neb: null,
+      testNeb: null,
+      walletAddress: null,
+      txhash: ""
     }),
     validations: {
       form: {
@@ -89,10 +103,33 @@
     },
     created() {
       this.nebPay = new NebPay();
+      this.neb = new Nebulas.Neb();
+      this.neb.setRequest(new Nebulas.HttpRequest("https://testnet.nebulas.io"));
+
+      this.testNeb = new Nebulas.Neb();
+      this.testNeb.setRequest(new Nebulas.HttpRequest("https://testnet.nebulas.io"));
+
+      // 获取插件导入的钱包地址
+      window.postMessage({
+        "target": "contentscript",
+        "data": {},
+        "method": "getAccount",
+      }, "*");
+    },
+    mounted() {
+      window.addEventListener('message', this.handleExtensionMessage);
+    },
+    beforeDestroy() {
+      window.removeEventListener('message', this.handleExtensionMessage);
     },
     methods: {
+      handleExtensionMessage(e) {
+        if (e.data.data && !!e.data.data.account) {
+          this.walletAddress = e.data.data.account;
+        }
+      },
       getValidationClass (fieldName) {
-        const field = this.$v.form[fieldName]
+        const field = this.$v.form[fieldName];
 
         if (field) {
           return {
@@ -109,6 +146,7 @@
       },
       saveUser () {
         this.sending = true;
+        this.ended = false;
         var name = this.form.username;
         var content = this.form.content;
         var date = this.getDate();
@@ -123,9 +161,14 @@
         var self = this;
         this.internal = window.setInterval(() => {
 
-          this.nebPay.queryPayInfo(this.serialNumber)   //search transaction result from server (result upload to server by app)
+          if (self.ended) {
+            window.clearInterval(self.internal);
+            return;
+          }
+
+          this.nebPay.queryPayInfo(this.serialNumber)
             .then(function (resp) {
-              console.log("tx result: " + resp)   //resp is a JSON string
+
               var respObject = JSON.parse(resp);
               if (respObject.code === 0) {
                 self.dialogContent = self.form.username + "成功记录到了星云区块链!";
@@ -133,13 +176,8 @@
                 self.sending = false;
                 self.showDialog = true;
                 self.clearForm();
-                clearInterval(self.internal);
-              } else if (respObject.code === 1) {
-                self.dialogTitle = "异常";
-                self.dialogContent = respObject.msg;
-                self.sending = false;
-                self.showDialog = true;
-                clearInterval(self.internal);
+                self.ended = true;
+                window.clearInterval(self.internal);
               }
             })
             .catch(function (err) {
@@ -151,7 +189,7 @@
         }, 15000)
       },
       validateUser () {
-        this.$v.$touch()
+        this.$v.$touch();
 
         if (!this.$v.$invalid) {
           this.saveUser()
@@ -174,7 +212,73 @@
       },
 
       cbPush(resp) {
-        console.log("response of push: " + JSON.stringify(resp))
+        this.txhash = resp.txhash;
+      },
+      query() {
+        this.$v.form.username.$touch();
+        if (!this.$v.form.username.$invalid) {
+          if (!this.walletAddress) {
+            this.dialogTitle = "异常";
+            this.dialogContent = "未能获取到钱包地址，请先在WebExtensionWallet插件中解锁帐号！";
+            this.sending = false;
+            this.showDialog = true;
+          }
+          this.sending = true;
+
+          var name = this.form.username;
+          var from = this.walletAddress;
+          var value = "0";
+          var nonce = "0";
+          var gas_price = "1000000";
+          var gas_limit = "2000000";
+          var callFunction = "get";
+          var callArgs = "[\"" + name + "\"]"; //in the form of ["args"]
+          var contract = {
+            "function": callFunction,
+            "args": callArgs
+          };
+          var self = this;
+          this.testNeb.api.call(from, this.dappAddress, value, nonce, gas_price, gas_limit, contract).then(function (resp) {
+            self.cbSearch(resp)
+          }).catch(function (err) {
+            self.dialogTitle = "异常";
+            self.dialogContent = "出错了：" + err;
+            self.sending = false;
+            self.showDialog = true;
+          })
+
+        }
+      },
+      queryCb(resp) {
+        console.log("query resp" + resp);
+      },
+      cbSearch(resp) {
+        var result = resp.result;    ////resp is an object, resp.result is a JSON string
+
+        if (result === 'null') {
+          this.dialogContent = "未能查询到您的数据！";
+          this.sending = false;
+          this.showDialog = true;
+        } else {
+          try {
+            result = JSON.parse(result)
+          } catch (err) {
+            this.dialogTitle = "异常";
+            this.dialogContent = "智能合约返回数据异常！";
+            this.sending = false;
+            this.showDialog = true;
+          }
+          if (!!result.content) {
+            this.form.content = result.content;
+            this.sending = false;
+          } else {
+            this.dialogTitle = "异常";
+            this.dialogContent = "介绍:" + result.content + "异常";
+            this.sending = false;
+            this.showDialog = true;
+          }
+
+        }
       }
     }
   }
@@ -195,5 +299,9 @@
         margin: 100px auto;
       }
     }
+  }
+
+  .search-btn {
+    margin-top: 15px;
   }
 </style>
