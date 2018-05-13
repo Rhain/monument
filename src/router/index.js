@@ -3,6 +3,7 @@ import Router from 'vue-router'
 import Home from '@/components/Home'
 import Explore from '@/components/Explore'
 import About from '@/components/About'
+import Tutorial from '@/components/Tutorial'
 
 Vue.use(Router)
 
@@ -23,6 +24,11 @@ export default new Router({
       path: '/about',
       name: 'About',
       component: About
+    },
+    {
+      path: '/tutorial',
+      name: 'Tutorial',
+      component: Tutorial
     },
   ]
 })
